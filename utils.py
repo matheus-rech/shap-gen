@@ -10,6 +10,8 @@ from typing import Tuple, Union, Dict, Any, Optional, List
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import LabelEncoder
 import streamlit as st
+import matplotlib.pyplot as plt
+import io
 
 def generate_synthetic_data(n_samples: int = 1000, n_features: int = 4) -> pd.DataFrame:
     """Generate synthetic data with different distributions and relationships."""
@@ -125,6 +127,31 @@ def calculate_shap_values(
         std_vals = std_vals[1] if len(std_vals.shape) > 2 else std_vals
     
     return shap_values, std_vals
+
+def create_native_shap_plot(
+    shap_values: np.ndarray,
+    X: pd.DataFrame,
+    title: str = "SHAP Values Distribution",
+    figsize: Tuple[int, int] = (10, 8),
+    max_display: int = None,
+    show_numbers: bool = True,
+    plot_size: Tuple[float, float] = (8, 12)
+) -> bytes:
+    """Create a native SHAP beeswarm plot and return it as bytes."""
+    plt.figure(figsize=figsize)
+    shap.plots.beeswarm(
+        shap_values,
+        show=False,
+        max_display=max_display or len(X.columns),
+        plot_size=plot_size
+    )
+    plt.title(title)
+    
+    # Save plot to bytes
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight', dpi=300)
+    plt.close()
+    return buf.getvalue()
 
 def cluster_features(shap_values: np.ndarray, n_clusters: int = 3) -> np.ndarray:
     """Cluster features based on their SHAP value patterns."""
@@ -291,16 +318,7 @@ def process_batch_files(
     settings: Dict[str, Any],
     progress_callback: Optional[callable] = None
 ) -> List[Dict[str, Any]]:
-    """Process multiple files with shared settings and return results.
-    
-    Args:
-        files: List of uploaded files
-        settings: Dictionary containing shared processing settings
-        progress_callback: Optional callback function for progress updates
-    
-    Returns:
-        List of dictionaries containing results for each file
-    """
+    """Process multiple files with shared settings and return results."""
     results = []
     n_files = len(files)
     
