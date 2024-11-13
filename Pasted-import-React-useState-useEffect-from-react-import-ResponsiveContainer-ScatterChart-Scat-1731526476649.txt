@@ -1,0 +1,129 @@
+import React, { useState, useEffect } from 'react';
+import { ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, LineChart, Line } from 'recharts';
+import { Slider } from '@/components/ui/slider';
+import { PlusCircle, Trash2, Settings, BarChart4, ScatterChart as ScatterIcon, LineChart as LineIcon } from 'lucide-react';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+
+// Advanced Beeswarm Plot with Distribution Controls
+const AdvancedBeeswarmPlot = ({ 
+  features, 
+  samples = 100, 
+  width = 800, 
+  height = 400,
+  jitterStrength = 0.5,
+  densityBandwidth = 0.1,
+  showOutliers = true,
+  minOpacity = 0.3,
+  maxOpacity = 0.8
+}) => {
+  const padding = { top: 20, right: 120, bottom: 40, left: 120 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  
+  // Sort features by absolute mean importance
+  const sortedFeatures = [...features].sort((a, b) => 
+    Math.abs(b.meanImportance) - Math.abs(a.meanImportance)
+  );
+
+  // Generate sample points with kernel density estimation
+  const generatePoints = () => {
+    return sortedFeatures.map((feature, featureIdx) => {
+      const points = [];
+      const yPos = featureIdx * (plotHeight / sortedFeatures.length) + 
+                   (plotHeight / sortedFeatures.length / 2);
+      
+      // Generate points using gaussian kernel
+      for (let i = 0; i < samples; i++) {
+        let value = feature.value;
+        let importance = feature.importance;
+        
+        // Apply gaussian noise with controlled strength
+        for (let j = 0; j < 3; j++) {
+          value += (Math.random() - 0.5) * jitterStrength;
+          importance += (Math.random() - 0.5) * jitterStrength;
+        }
+        
+        // Apply density-based opacity
+        const distanceFromMean = Math.abs(importance - feature.importance);
+        const opacity = maxOpacity - (distanceFromMean / densityBandwidth) * (maxOpacity - minOpacity);
+        
+        if (showOutliers || distanceFromMean < densityBandwidth * 3) {
+          points.push({ value, importance, yPos, opacity: Math.max(minOpacity, opacity) });
+        }
+      }
+      return { feature, points };
+    });
+  };
+
+  const allPoints = generatePoints();
+  const maxAbs = Math.max(
+    ...allPoints.flatMap(f => f.points.map(p => Math.abs(p.importance)))
+  );
+  
+  const scaleX = (value) => padding.left + (value + maxAbs) * plotWidth / (2 * maxAbs);
+
+  return (
+    <svg width={width} height={height} className="font-sans">
+      {/* Y-axis feature labels */}
+      {sortedFeatures.map((feature, idx) => (
+        <text
+          key={`label-${idx}`}
+          x={padding.left - 10}
+          y={idx * (plotHeight / sortedFeatures.length) + 
+             (plotHeight / sortedFeatures.length / 2) + padding.top}
+          textAnchor="end"
+          alignmentBaseline="middle"
+          className="text-sm fill-gray-700"
+        >
+          {feature.name}
+        </text>
+      ))}
+
+      {/* X-axis */}
+      <line
+        x1={padding.left}
+        y1={height - padding.bottom}
+        x2={width - padding.right}
+        y2={height - padding.bottom}
+        stroke="#666"
+      />
+      
+      {/* Center line */}
+      <line
+        x1={scaleX(0)}
+        y1={padding.top}
+        x2={scaleX(0)}
+        y2={height - padding.bottom}
+        stroke="#666"
+        strokeDasharray="4"
+      />
+
+      {/* Enhanced points with density-based opacity */}
+      {allPoints.map((featureData, fidx) => 
+        featureData.points.map((point, pidx) => (
+          <circle
+            key={`point-${fidx}-${pidx}`}
+            cx={scaleX(point.importance)}
+            cy={point.yPos + padding.top}
+            r={2}
+            fill={point.importance > 0 ? '#3B82F6' : '#EF4444'}
+            opacity={point.opacity}
+          />
+        ))
+      )}
+
+      {/* X-axis labels */}
+      <text
+        x={width / 2}
+        y={height - 5}
+        textAnchor="middle"
+        className="text-sm fill-gray-700"
+      >
+        SHAP value (impact on model output)
+      </text>
+    </svg>
+  );
+};
+
+export default AdvancedBeeswarmPlot;
