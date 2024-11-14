@@ -96,3 +96,32 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [SHAP](https://github.com/slundberg/shap) library for the core functionality
 - [Streamlit](https://streamlit.io/) for the web interface
 - [Plotly](https://plotly.com/) for interactive visualizations
+
+## Deployment
+
+### Local Development
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run app
+streamlit run main.py
+```
+
+### Docker Deployment
+```bash
+# Build image
+docker build -t shap-gen .
+
+# Run container
+docker run -p 8501:8501 shap-gen
+```
+
+### Streamlit Cloud
+1. Push to GitHub
+2. Go to share.streamlit.io
+3. Deploy from repository

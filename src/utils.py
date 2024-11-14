@@ -16,6 +16,32 @@ import pickle
 import joblib
 from joblib import Parallel, delayed
 
+def handle_model_error(func):
+    """Decorator for handling model errors."""
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            st.error(f"Model error: {str(e)}")
+            st.stop()
+    return wrapper
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def load_and_preprocess_data(file):
+    """Cache data loading and preprocessing."""
+    return validate_file(file)
+
+@st.cache_resource
+def get_explainer(model, X):
+    """Cache SHAP explainer creation."""
+    if hasattr(model, 'estimators_'):
+        return shap.TreeExplainer(model)
+    elif hasattr(model, 'coef_'):
+        return shap.LinearExplainer(model, X)
+    else:
+        background = shap.kmeans(X, 10)
+        return shap.KernelExplainer(model.predict, background)
+
 def cluster_features_fn(shap_values: np.ndarray, n_clusters: int = 3) -> np.ndarray:
     """Cluster features based on their SHAP value patterns."""
     feature_patterns = shap_values.T  # Transpose to get features as samples
@@ -46,14 +72,30 @@ def get_model(model_type: str, task_type: str):
     }
     return models[model_type][task_type]
 
-@st.cache_data
+def handle_memory_error(func):
+    """Decorator for handling memory errors."""
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except MemoryError:
+            st.error("Out of memory. Try reducing the number of samples or using Fast Mode.")
+            st.stop()
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
+            st.stop()
+    return wrapper
+
+@handle_memory_error
+@st.cache_data(ttl=3600)
 def calculate_shap_values(
     X: pd.DataFrame,
     y: pd.Series,
     n_samples: int,
     model_type: str = 'random_forest',
     task_type: str = 'regression',
-    approximate: bool = False
+    approximate: bool = False,
+    use_parallel: bool = True,
+    chunk_size: int = 500
 ) -> Tuple[shap.Explanation, Optional[np.ndarray]]:
     """Calculate SHAP values using parallel processing."""
     # Label encoding for classification tasks
@@ -85,34 +127,22 @@ def calculate_shap_values(
         progress_bar.progress(0.5)
         status_text.text("Calculating SHAP values...")
         
-        # Calculate SHAP values
-        if model_type in ['random_forest', 'xgboost']:
-            explainer = shap.TreeExplainer(
-                model,
-                feature_perturbation='interventional',
-                approximate=approximate
-            )
-        elif model_type == 'linear':
-            explainer = shap.LinearExplainer(model, X)
-        else:  # SVM and others
-            background = shap.kmeans(X, 10)
-            explainer = shap.KernelExplainer(
-                model.predict_proba if task_type == 'classification' else model.predict,
-                background
-            )
+        # Get cached explainer
+        explainer = get_explainer(model, X)
         
-        # SHAP calculation with chunking for large datasets
-        if len(X) > 10000:  # For large datasets
-            chunk_size = min(1000, n_samples)
+        # Process data in chunks with caching
+        if len(X) > chunk_size:
             chunks = np.array_split(X_sample, len(X_sample) // chunk_size + 1)
             
-            # Process chunks
-            shap_values_list = []
-            for chunk in chunks:
-                chunk_values = explainer(chunk)
-                shap_values_list.append(chunk_values)
+            if use_parallel:
+                # Parallel processing with joblib
+                shap_values_list = Parallel(n_jobs=-1)(
+                    delayed(process_data_chunk)(chunk, explainer) for chunk in chunks
+                )
+            else:
+                # Sequential processing with caching
+                shap_values_list = [process_data_chunk(chunk, explainer) for chunk in chunks]
             
-            # Combine results
             shap_values = np.concatenate(shap_values_list)
         else:
             shap_values = explainer(X_sample)
@@ -301,19 +331,35 @@ def create_shap_plot(
     
     return fig
 
+@st.cache_data(ttl=3600)
 def validate_file(uploaded_file) -> pd.DataFrame:
     """Validate and load the uploaded file."""
     try:
+        # Check file type
+        if not uploaded_file.name.lower().endswith(('.csv', '.xlsx')):
+            raise ValueError("Unsupported file type. Please upload CSV or Excel files.")
+        
+        # Load file
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
             df = pd.read_excel(uploaded_file)
         
-        # Basic validation
+        # Basic validations
         if df.empty:
             raise ValueError("The uploaded file is empty")
         if df.columns.duplicated().any():
             raise ValueError("Duplicate column names found")
+        
+        # Check for missing values
+        if df.isnull().any().any():
+            st.warning("Warning: Dataset contains missing values. They will be handled automatically.")
+            df = df.fillna(df.mean())
+        
+        # Check data types
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) == 0:
+            raise ValueError("No numeric columns found in the dataset")
         
         return df
     except Exception as e:
@@ -419,6 +465,7 @@ def create_native_shap_plot(
     plt.close()
     return buf.getvalue()
 
+@st.cache_data
 def calculate_feature_importance(
     shap_values: Union[np.ndarray, shap.Explanation],
     feature_names: List[str]
@@ -505,8 +552,18 @@ def process_batch_files(
     
     return results
 
+def validate_custom_model(model: Any) -> bool:
+    """Validate that the custom model has required methods."""
+    required_methods = ['predict']
+    
+    for method in required_methods:
+        if not hasattr(model, method):
+            raise ValueError(f"Custom model must have '{method}' method")
+    
+    return True
+
 def load_model(model_file) -> Any:
-    """Load a model from a pickle or joblib file."""
+    """Load and validate a model from a pickle or joblib file."""
     try:
         # Try to determine file type from extension
         file_extension = model_file.name.lower().split('.')[-1]
@@ -522,6 +579,9 @@ def load_model(model_file) -> Any:
             model = joblib.load(io.BytesIO(file_content))
         else:
             raise ValueError("Unsupported file format. Please use .pkl, .pickle, or .joblib files.")
+        
+        # Validate model
+        validate_custom_model(model)
         
         return model
     except Exception as e:
@@ -579,3 +639,35 @@ def calculate_shap_values_custom_model(
     
     except Exception as e:
         raise ValueError(f"Error calculating SHAP values: {str(e)}")
+
+@st.cache_data
+def process_data_chunk(chunk: pd.DataFrame, explainer: Any) -> np.ndarray:
+    """Process a chunk of data with caching."""
+    return explainer(chunk)
+
+def cleanup_memory():
+    """Clean up memory after heavy computations."""
+    import gc
+    gc.collect()
+    if hasattr(st.session_state, 'shap_values'):
+        del st.session_state.shap_values
+    if hasattr(st.session_state, 'model'):
+        del st.session_state.model
+
+def check_dependencies():
+    """Check if all required dependencies are installed with correct versions."""
+    try:
+        import pkg_resources
+        
+        required = {
+            'streamlit': '1.24.0',
+            'shap': '0.41.0',
+            'plotly': '5.13.0'
+        }
+        
+        for package, min_version in required.items():
+            installed = pkg_resources.get_distribution(package).version
+            if pkg_resources.parse_version(installed) < pkg_resources.parse_version(min_version):
+                st.warning(f"{package} version {min_version} or higher required. Found version {installed}")
+    except Exception as e:
+        st.warning(f"Could not verify package versions: {str(e)}")
